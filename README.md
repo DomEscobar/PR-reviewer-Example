@@ -12,13 +12,48 @@ An automated PR code review system that:
 - Runs via **CLI** or **GitHub Actions**
 - **Production-hardened** with security controls
 
+## Prerequisites
+
+Before you start, you'll need:
+
+1. **OpenRouter API Key** - Get one at [openrouter.ai](https://openrouter.ai)
+   - Sign up for free
+   - Add credits (minimum $5 recommended)
+   - Create an API key at [openrouter.ai/keys](https://openrouter.ai/keys)
+
+2. **GitHub Repository** - Admin access to add secrets
+
 ## Quick Start
 
-1. Copy `.github/pr-reviewer/` to your repo
-2. Copy `.github/workflows/pr-review.yml` to your repo
-3. Add secret `OPENCODE_API_KEY` (OpenRouter API key)
-4. (Optional) Add secret `OPENCODE_MODEL` to override model
-5. Comment `/review` on any PR
+### 1. Copy Files
+
+```bash
+# Copy CLI tool
+cp -r .github/pr-reviewer your-repo/.github/
+
+# Copy workflow
+cp .github/workflows/pr-review.yml your-repo/.github/workflows/
+```
+
+### 2. Add GitHub Secrets
+
+Go to your repo → Settings → Secrets and variables → Actions → New repository secret
+
+| Secret Name | Value | Where to Get |
+|-------------|-------|--------------|
+| `OPENCODE_API_KEY` | Your OpenRouter API key | [openrouter.ai/keys](https://openrouter.ai/keys) |
+| `OPENCODE_MODEL` *(optional)* | Model name (e.g., `anthropic/claude-3.5-sonnet`) | [OpenRouter models](https://openrouter.ai/models) |
+
+> **Note:** The secret is named `OPENCODE_API_KEY` for historical reasons, but it's your OpenRouter API key.
+
+### 3. Trigger a Review
+
+Comment on any PR:
+```
+/review
+/review focus on security issues
+/oc check for SQL injection
+```
 
 ## Structure
 
@@ -39,6 +74,7 @@ An automated PR code review system that:
 │   │   └── agent/
 │   │       └── code-review.md  # Default agent config
 │   ├── package.json
+│   ├── package-lock.json
 │   └── README.md
 │
 └── workflows/
@@ -84,6 +120,7 @@ This implementation includes production-grade security controls:
 | **Permission Check** | Only users with write access can trigger |
 | **Idempotency** | Skips if review already exists within 1 hour |
 | **Concurrency Limits** | Prevents duplicate runs on same PR |
+| **OpenCode Version Pinned** | Uses `opencode-ai@1.2.26` for stability |
 
 ## Reliability Features
 
@@ -170,22 +207,43 @@ Each run logs to `GITHUB_STEP_SUMMARY`:
 - **Validation**: Zod
 - **AI**: OpenCode + OpenRouter
 
-## Testing
+## Cost Estimates
 
+| Diff Size | Estimated Cost |
+|-----------|----------------|
+| 1 KB | $0.001 |
+| 10 KB | $0.01 |
+| 100 KB | $0.10 |
+| 1 MB | $1.00 |
+
+> **Note:** Actual costs depend on the model used. Claude models are more expensive than open-source alternatives.
+
+## Troubleshooting
+
+### "spawn opencode ENOENT"
+OpenCode is not installed. The workflow should install it automatically, but if it fails:
 ```bash
-# Build
-npm run build
+npm install -g opencode-ai@1.2.26
+```
 
-# Run review locally
-pr-reviewer review --pr 5 --dry-run
+### "401 Unauthorized"
+Your API key is invalid or expired. Get a new one at [openrouter.ai/keys](https://openrouter.ai/keys).
 
-# Check logs
-# Logs are structured JSON for easy parsing
+### "422 Unprocessable Entity"
+Usually means trying to comment on a line not in the diff. This is now handled automatically - invalid line comments are skipped.
+
+### "Review already exists within the last hour"
+The idempotency check kicked in. Wait an hour or delete the previous bot comment.
+
+### Timeout
+Large PRs may take longer. The default timeout is 10 minutes. Increase in the workflow:
+```yaml
+timeout-minutes: 15
 ```
 
 ## License
 
-MIT
+MIT License - See [LICENSE](LICENSE) for details.
 
 ---
 

@@ -23,7 +23,6 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-      issues: write
     env:
       OPENROUTER_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
 
@@ -49,7 +48,7 @@ jobs:
           key: cli-${{ hashFiles('.github/pr-reviewer/**') }}
 
       - name: Install OpenCode
-        run: npm install -g opencode-ai
+        run: npm install -g opencode-ai@1.2.26
 
       - name: Build CLI
         if: steps.cache-cli.outputs.cache-hit != 'true'
