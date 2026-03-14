@@ -43,14 +43,20 @@ jobs:
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
         run: |
+          # Configure OpenRouter provider
+          echo "${OPENROUTER_API_KEY}" | opencode auth login openrouter
+          
+          # Set default model
           mkdir -p ~/.config/opencode
-          cat > ~/.config/opencode/settings.yaml << 'EOF'
-          model: ${{ secrets.OPENCODE_MODEL || 'openrouter/anthropic/claude-3.5-sonnet' }}
-          provider: openrouter
-          providers:
-            openrouter:
-              apiKey: ${OPENROUTER_API_KEY}
-              baseURL: https://openrouter.ai/api/v1
+          cat > ~/.config/opencode/opencode.json << 'EOF'
+          {
+            "$schema": "https://opencode.ai/config.json",
+            "model": "${{ secrets.OPENCODE_MODEL || 'openrouter/anthropic/claude-3.5-sonnet' }}",
+            "permission": {
+              "external_directory": "allow",
+              "*": "allow"
+            }
+          }
           EOF
 
       - name: Add Processing Reaction
@@ -79,6 +85,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          MODEL="${{ secrets.OPENCODE_MODEL || 'openrouter/anthropic/claude-3.5-sonnet' }}"
+          
           # Extract custom prompt from comment (optional)
           PROMPT=$(echo '${{ github.event.comment.body }}' | sed 's/^\/review\s*//' | sed 's/^\/oc\s*//')
           
@@ -87,12 +95,14 @@ jobs:
               --platform github \
               --pr ${{ github.event.issue.number }} \
               --repo ${{ github.repository }} \
+              --model "$MODEL" \
               --prompt "$PROMPT"
           else
             pr-reviewer review \
               --platform github \
               --pr ${{ github.event.issue.number }} \
-              --repo ${{ github.repository }}
+              --repo ${{ github.repository }} \
+              --model "$MODEL"
           fi
 
       - name: Add Success Reaction
