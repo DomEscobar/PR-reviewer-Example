@@ -19,6 +19,7 @@ export class GitHubAdapter implements PlatformAdapter {
   readonly name = 'github';
   private readonly token: string;
   private readonly repo?: string;
+  private validLines: Map<string, Set<number>> = new Map();
 
   constructor(token?: string, repo?: string) {
     this.token = token || process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '';
@@ -72,6 +73,9 @@ export class GitHubAdapter implements PlatformAdapter {
       return this.buildPullRequest(prData, truncatedDiff, []);
     }
 
+    // Parse diff to extract valid line numbers for comments
+    this.validLines = this.parseDiffLines(diff);
+
     // Fetch all changed files (with pagination)
     const files = await this.fetchAllPages<GitHubFileResponse>(
       `GET /repos/${owner}/${name}/pulls/${prNumber}/files`
@@ -123,11 +127,41 @@ export class GitHubAdapter implements PlatformAdapter {
       throw new Error(`Invalid repo format: ${repo}`);
     }
     
-    logger.info('Posting line comments', { count: comments.length });
+    // Filter comments to only those with valid lines
+    const validComments = comments.filter(comment => {
+      const lines = this.validLines.get(comment.path);
+      if (!lines) {
+        logger.warn('Skipping comment for unknown file', { path: comment.path });
+        return false;
+      }
+      if (!lines.has(comment.line)) {
+        logger.warn('Skipping comment for line not in diff', {
+          path: comment.path,
+          line: comment.line,
+          validLines: lines.size
+        });
+        return false;
+      }
+      return true;
+    });
+
+    if (validComments.length < comments.length) {
+      logger.info('Filtered out invalid line comments', {
+        original: comments.length,
+        valid: validComments.length
+      });
+    }
+
+    if (validComments.length === 0) {
+      logger.info('No valid line comments to post');
+      return;
+    }
+
+    logger.info('Posting line comments', { count: validComments.length });
 
     // Post comments in parallel with Promise.allSettled
     const results = await Promise.allSettled(
-      comments.map(comment =>
+      validComments.map(comment =>
         this.postSingleLineComment(owner, name, pr, comment, headSha)
       )
     );
@@ -138,12 +172,71 @@ export class GitHubAdapter implements PlatformAdapter {
     if (failures.length > 0) {
       logger.warn('Some line comments failed', {
         failed: failures.length,
-        total: comments.length
+        total: validComments.length
       });
 
       // Don't throw - partial success is acceptable for line comments
       // Main comment already posted with all findings
     }
+  }
+
+  /**
+   * Parse a unified diff to extract valid line numbers for comments.
+   * Returns a map of file paths to sets of line numbers that were changed.
+   */
+  private parseDiffLines(diff: string): Map<string, Set<number>> {
+    const result = new Map<string, Set<number>>();
+    let currentFile = '';
+    let currentLines = new Set<number>();
+
+    const lines = diff.split('\n');
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line) continue;
+      
+      // New file starts with --- a/ or +++ b/
+      if (line.startsWith('diff --git ')) {
+        // Save previous file
+        if (currentFile && currentLines.size > 0) {
+          result.set(currentFile, currentLines);
+        }
+        // Parse new file path: diff --git a/path/to/file b/path/to/file
+        const match = line.match(/diff --git a\/(.+?) b\/(.+)$/);
+        if (match && match[2]) {
+          currentFile = match[2];
+          currentLines = new Set();
+        } else {
+          currentFile = '';
+        }
+        continue;
+      }
+
+      // Hunk header: @@ -start,count +start,count @@ 
+      // The +start,count tells us the new file line numbers
+      if (line.startsWith('@@')) {
+        const match = line.match(/@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
+        if (match && match[1]) {
+          const startLine = parseInt(match[1], 10);
+          const lineCount = match[2] ? parseInt(match[2], 10) : 1;
+          // Add all lines in this hunk
+          for (let l = startLine; l < startLine + lineCount; l++) {
+            currentLines.add(l);
+          }
+        }
+        continue;
+      }
+
+      // Lines starting with + are additions (in the new file)
+      // We need to track actual line numbers, which requires keeping a counter
+    }
+
+    // Save last file
+    if (currentFile && currentLines.size > 0) {
+      result.set(currentFile, currentLines);
+    }
+
+    return result;
   }
 
   private async postSingleLineComment(
