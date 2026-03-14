@@ -4,6 +4,11 @@ on:
   issue_comment:
     types: [created]
 
+# Prevent duplicate runs
+concurrency:
+  group: pr-review-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
 jobs:
   review:
     # Only run on PR comments starting with /review or /oc
@@ -14,6 +19,7 @@ jobs:
         startsWith(github.event.comment.body, '/oc')
       )
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       pull-requests: write
@@ -31,15 +37,30 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: '.github/pr-reviewer/package-lock.json'
+
+      # Cache the built CLI
+      - name: Cache CLI Build
+        uses: actions/cache@v4
+        id: cache-cli
+        with:
+          path: /tmp/pr-reviewer
+          key: cli-${{ hashFiles('.github/pr-reviewer/**') }}
 
       - name: Install Tools
+        if: steps.cache-cli.outputs.cache-hit != 'true'
         run: |
           npm install -g opencode-ai
-          npm install -g commander chalk ora typescript
+          npm install -g commander chalk ora typescript zod
           
           # Copy CLI to runner, build, and install
           cp -r ${{ github.workspace }}/.github/pr-reviewer /tmp/pr-reviewer
-          cd /tmp/pr-reviewer && npm install && npm run build && npm link
+          cd /tmp/pr-reviewer && npm install && npm run build
+
+      - name: Link CLI
+        run: |
+          cd /tmp/pr-reviewer && npm link
 
       - name: Configure OpenCode
         env:
@@ -64,12 +85,21 @@ jobs:
             -F content="eyes" || true
 
       - name: Check Author Permission
+        id: permission-check
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           AUTHOR="${{ github.event.comment.user.login }}"
+          
+          # Skip permission check for repo owner
+          REPO_OWNER="${{ github.repository_owner }}"
+          if [[ "$AUTHOR" == "$REPO_OWNER" ]]; then
+            echo "Authorized: repository owner"
+            exit 0
+          fi
+          
           PERM=$(gh api repos/${{ github.repository }}/collaborators/$AUTHOR/permission \
-            --jq '.permission')
+            --jq '.permission' 2>/dev/null || echo "none")
           
           if [[ "$PERM" != "admin" && "$PERM" != "write" && "$PERM" != "maintain" ]]; then
             echo "::warning::User $AUTHOR lacks write permission ($PERM)"
@@ -77,10 +107,58 @@ jobs:
               -F content="-1" || true
             exit 1
           fi
+          
+          echo "Authorized: $PERM"
 
-      - name: Run Code Review
+      # Budget check - estimate cost before running
+      - name: Check Budget
+        id: budget-check
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Get PR diff size
+          DIFF_SIZE=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.issue.number }} \
+            -H "Accept: application/vnd.github.v3.diff" | wc -c)
+          
+          # Rough cost estimate: $0.001 per 1KB of diff
+          ESTIMATED_COST=$(echo "scale=4; $DIFF_SIZE * 0.001 / 1024" | bc)
+          
+          echo "diff_size=$DIFF_SIZE" >> $GITHUB_OUTPUT
+          echo "estimated_cost=$ESTIMATED_COST" >> $GITHUB_OUTPUT
+          
+          # Check against budget limit (default $1 per review)
+          BUDGET_LIMIT="${{ secrets.REVIEW_BUDGET_LIMIT || '1.00' }}"
+          if (( $(echo "$ESTIMATED_COST > $BUDGET_LIMIT" | bc -l) )); then
+            echo "::warning::Estimated cost \$$ESTIMATED_COST exceeds budget limit \$$BUDGET_LIMIT"
+            gh pr comment ${{ github.event.issue.number }} --repo ${{ github.repository }} \
+              --body "⚠️ Review skipped: estimated cost (\`$${ESTIMATED_COST}\`) exceeds budget limit."
+            exit 1
+          fi
+          
+          echo "Budget check passed (estimated: \$$ESTIMATED_COST)"
+
+      # Check for existing review (idempotency)
+      - name: Check for Existing Review
+        id: existing-review
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Check if bot already commented on this PR recently
+          EXISTING=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments" \
+            --jq '[.[] | select(.user.login == "github-actions[bot]" and .created_at > (now - 3600 | strftime("%Y-%m-%dT%H:%M:%SZ")))] | length')
+          
+          if [[ $EXISTING -gt 0 ]]; then
+            echo "::notice::Review already exists within the last hour"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run Code Review
+        if: steps.existing-review.outputs.skip != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        id: review
         run: |
           # Ensure model has correct format: openrouter/openrouter/model-name
           RAW_MODEL="${{ secrets.OPENCODE_MODEL || 'anthropic/claude-3.5-sonnet' }}"
@@ -95,9 +173,13 @@ jobs:
           fi
           
           echo "Using model: $MODEL"
+          echo "model=$MODEL" >> $GITHUB_OUTPUT
           
           # Extract custom prompt from comment (optional)
           PROMPT=$(echo '${{ github.event.comment.body }}' | sed 's/^\/review\s*//' | sed 's/^\/oc\s*//')
+          
+          # Run review
+          START_TIME=$(date +%s%3N)
           
           if [ -n "$PROMPT" ] && [ "$PROMPT" != "review this" ]; then
             pr-reviewer review \
@@ -105,17 +187,22 @@ jobs:
               --pr ${{ github.event.issue.number }} \
               --repo ${{ github.repository }} \
               --model "$MODEL" \
-              --prompt "$PROMPT"
+              --prompt "$PROMPT" 2>&1 | tee /tmp/review-output.txt
           else
             pr-reviewer review \
               --platform github \
               --pr ${{ github.event.issue.number }} \
               --repo ${{ github.repository }} \
-              --model "$MODEL"
+              --model "$MODEL" 2>&1 | tee /tmp/review-output.txt
           fi
+          
+          END_TIME=$(date +%s%3N)
+          DURATION=$((END_TIME - START_TIME))
+          
+          echo "duration_ms=$DURATION" >> $GITHUB_OUTPUT
 
       - name: Add Success Reaction
-        if: success()
+        if: success() && steps.existing-review.outputs.skip != 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -129,3 +216,15 @@ jobs:
         run: |
           gh api repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions \
             -F content="confused" || true
+
+      - name: Log Metrics
+        if: always()
+        run: |
+          echo "## 📊 Review Metrics" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Model | \`${{ steps.review.outputs.model || 'N/A' }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Duration | ${{ steps.review.outputs.duration_ms || 'N/A' }}ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| Diff Size | ${{ steps.budget-check.outputs.diff_size || 'N/A' }} bytes |" >> $GITHUB_STEP_SUMMARY
+          echo "| Estimated Cost | \$${{ steps.budget-check.outputs.estimated_cost || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY

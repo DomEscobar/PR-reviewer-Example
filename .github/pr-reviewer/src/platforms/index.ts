@@ -30,14 +30,14 @@ export function detectPlatform(repo?: string): PlatformAdapter {
 
   // Check git remote
   try {
+    const { execSync } = require('child_process');
     const remote = execSync('git remote get-url origin', { encoding: 'utf-8' }).trim();
     if (remote.includes('github.com')) return github;
     if (remote.includes('gitlab.com')) return gitlab;
-  } catch {}
+  } catch {
+    // Ignore git errors
+  }
 
   // Default to GitHub
-  console.warn('Could not detect platform, defaulting to GitHub');
   return github;
 }
-
-import { execSync } from 'child_process';

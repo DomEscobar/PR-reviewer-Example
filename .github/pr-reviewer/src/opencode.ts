@@ -2,33 +2,36 @@ import { spawn } from 'child_process';
 import { access, readFile, writeFile, mkdir, unlink } from 'fs/promises';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import type { PullRequest, ReviewResult, ReviewComment } from './types.js';
+import type { PullRequest, ReviewResult, ReviewComment, ReviewMetadata, OpenCodeError } from './types.js';
+import { sanitizePrompt } from './validation.js';
+import logger from './logger.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+const MAX_DIFF_SIZE = 50000; // 50KB for AI context
+const DEFAULT_MODEL = 'openrouter/openrouter/anthropic/claude-3.5-sonnet';
+
 export class OpenCodeRunner {
-  private configPath: string;
-  private model?: string;
+  private readonly configPath: string;
+  private readonly model: string;
 
   constructor(options?: { config?: string; model?: string }) {
-    this.configPath = options?.config || this.getDefaultConfigPath();
-    this.model = options?.model;
+    this.configPath = options?.config ?? this.getDefaultConfigPath();
+    this.model = options?.model ?? DEFAULT_MODEL;
   }
 
   private getDefaultConfigPath(): string {
-    const xdgConfig = process.env.XDG_CONFIG_HOME || join(process.env.HOME!, '.config');
+    const xdgConfig = process.env.XDG_CONFIG_HOME ?? join(process.env.HOME!, '.config');
     return join(xdgConfig, 'opencode');
   }
 
   async ensureConfig(): Promise<void> {
-    // Ensure config directory exists
     try {
       await access(this.configPath);
     } catch {
       await mkdir(this.configPath, { recursive: true });
     }
 
-    // Ensure agent directory exists
     const agentDir = join(this.configPath, 'agent');
     try {
       await access(agentDir);
@@ -36,13 +39,12 @@ export class OpenCodeRunner {
       await mkdir(agentDir, { recursive: true });
     }
 
-    // Ensure code-review.md exists
     const agentFile = join(agentDir, 'code-review.md');
     try {
       await access(agentFile);
     } catch {
-      // Create default code-review agent if it doesn't exist
       await writeFile(agentFile, this.getDefaultAgent());
+      logger.info('Created default code-review agent');
     }
   }
 
@@ -62,7 +64,7 @@ You are a code reviewer. Provide actionable, evidence-based feedback.
 ## Review Process
 
 1. Read changed files in full to understand context
-2. Run linters/type checkers if available
+2. Run linters/type checkers if available  
 3. Focus on HIGH risk areas (auth, crypto, external calls)
 
 ## What to Look For
@@ -88,36 +90,57 @@ End with summary count. If no issues, say so.
 
   async runReview(pr: PullRequest, customPrompt?: string): Promise<ReviewResult> {
     await this.ensureConfig();
+    
+    const startTime = Date.now();
+    
+    // Sanitize user input
+    const sanitizedPrompt = sanitizePrompt(customPrompt);
+    const message = this.buildReviewMessage(pr, sanitizedPrompt);
 
-    // Build the review message
-    const message = this.buildReviewMessage(pr, customPrompt);
-
-    // Write diff to temp file for attachment
+    // Write diff to temp file
     const diffFile = join(process.cwd(), '.pr-diff.patch');
-    await writeFile(diffFile, pr.diff);
+    const truncatedDiff = pr.diff.length > MAX_DIFF_SIZE 
+      ? pr.diff.slice(0, MAX_DIFF_SIZE) + '\n\n... [Truncated for AI context]'
+      : pr.diff;
+    
+    await writeFile(diffFile, truncatedDiff);
 
     try {
-      // Build opencode command
-      // OpenCode expects: opencode run -m model -f file "message"
-      const model = this.model || 'openrouter/anthropic/claude-3.5-sonnet';
-      
       const args = [
         'run',
-        '-m', model,
+        '-m', this.model,
         '--format', 'default',
         '-f', diffFile,
+        '--', message,
       ];
 
-      // Add separator and message
-      args.push('--', message);
+      logger.info('Running OpenCode review', {
+        model: this.model,
+        diffSize: truncatedDiff.length,
+        filesCount: pr.changedFiles.length,
+      });
 
-      // Run opencode
       const result = await this.execOpenCode(args);
-      return this.parseReviewResult(result);
+      const durationMs = Date.now() - startTime;
+
+      const parsedResult = this.parseReviewResult(result);
+      
+      return {
+        ...parsedResult,
+        metadata: {
+          model: this.model,
+          durationMs,
+          diffSize: pr.diff.length,
+          filesReviewed: pr.changedFiles.length,
+        },
+      };
     } finally {
       try {
         await unlink(diffFile);
-      } catch {}
+        logger.debug('Cleaned up diff file');
+      } catch {
+        // Ignore cleanup errors
+      }
     }
   }
 
@@ -160,6 +183,7 @@ ${pr.body || 'No description provided.'}`;
         env: {
           ...process.env,
           NO_COLOR: '1',
+          FORCE_COLOR: '0',
         },
         stdio: ['inherit', 'pipe', 'pipe'],
       });
@@ -179,12 +203,14 @@ ${pr.body || 'No description provided.'}`;
         if (code === 0 || stdout) {
           resolve(stdout || stderr);
         } else {
-          reject(new Error(`OpenCode failed (exit ${code}): ${stderr || 'Unknown error'}`));
+          const error = new Error(`OpenCode failed (exit ${code}): ${stderr || 'Unknown error'}`);
+          Object.assign(error, { exitCode: code, stderr });
+          reject(error);
         }
       });
 
       child.on('error', (err) => {
-        reject(new Error(`OpenCode failed: ${err.message}`));
+        reject(new Error(`OpenCode process error: ${err.message}`));
       });
     });
   }
@@ -197,6 +223,12 @@ ${pr.body || 'No description provided.'}`;
       summary,
       comments,
       fullReview: output,
+      metadata: {
+        model: this.model,
+        durationMs: 0, // Set by caller
+        diffSize: 0,
+        filesReviewed: 0,
+      },
     };
   }
 
@@ -204,14 +236,14 @@ ${pr.body || 'No description provided.'}`;
     const comments: ReviewComment[] = [];
     
     // Match file:line patterns with backticks
-    const fileLinePattern = /`([^`]+\.(ts|tsx|js|jsx|vue|py|go|rs|java|c|cpp|h)):(\d+)`/gi;
+    const fileLinePattern = /`([^`]+\.(ts|tsx|js|jsx|vue|py|go|rs|java|c|cpp|h|cs|php|rb)):(\d+)`/gi;
     let match;
 
     while ((match = fileLinePattern.exec(review)) !== null) {
       const path = match[1];
       const line = parseInt(match[3], 10);
 
-      // Get surrounding context as the comment body
+      // Get surrounding context
       const contextStart = match.index;
       const nextSection = review.indexOf('\n##', contextStart);
       const nextFinding = review.indexOf('**[', contextStart + 10);
@@ -222,7 +254,7 @@ ${pr.body || 'No description provided.'}`;
 
       const body = review.substring(contextStart, contextEnd).trim();
 
-      // Determine severity from context
+      // Determine severity
       let severity: ReviewComment['severity'] = 'medium';
       const upperBody = body.toUpperCase();
       if (upperBody.includes('CRITICAL')) severity = 'critical';
@@ -243,11 +275,9 @@ ${pr.body || 'No description provided.'}`;
   }
 
   private extractSummary(review: string): string {
-    // Try to find summary section
     const summaryMatch = review.match(/## Summary\n([\s\S]*?)(?=\n##|$)/i);
     if (summaryMatch) return summaryMatch[1].trim();
 
-    // Try to find a "X issues found" pattern
     const countMatch = review.match(/(\d+)\s+(critical|high|medium|low|issues?)/i);
     if (countMatch) return `Found ${countMatch[0]}`;
 
