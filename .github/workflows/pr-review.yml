@@ -53,13 +53,10 @@ jobs:
           # Run opencode with run command
           OUTPUT=$(opencode run "$PROMPT" 2>&1) || true
           
-          # Post comment to PR
-          if [ -n "$OUTPUT" ]; then
-            # Escape JSON special characters
-            ESCAPED_OUTPUT=$(echo "$OUTPUT" | jq -Rs .)
-            curl -X POST \
-              -H "Authorization: token $GITHUB_TOKEN" \
-              -H "Content-Type: application/json" \
-              -d "{\"body\": \"## 🤖 Code Review\n\n$ESCAPED_OUTPUT\"}" \
-              "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments"
-          fi
+          # Save output to file
+          echo "$OUTPUT" > /tmp/review_output.txt
+          
+          # Post comment to PR using gh cli
+          gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
+            -F body="🤖 Code Review:" \
+            -F body="$(cat /tmp/review_output.txt)"
