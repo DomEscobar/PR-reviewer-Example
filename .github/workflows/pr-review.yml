@@ -38,23 +38,25 @@ jobs:
           EOF
 
       - name: Run OpenCode Review
-        id: review
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Get PR info
           PR_NUMBER=${{ github.event.issue.number }}
           REPO=${{ github.repository }}
           
-          # Extract prompt from comment (remove /oc or /opencode)
+          # Extract prompt
           PROMPT=$(echo '${{ github.event.comment.body }}' | sed 's/^\/oc\s*//' | sed 's/^\/opencode\s*//')
           
-          # Run opencode with run command
+          # Run opencode
           OUTPUT=$(opencode run "$PROMPT" 2>&1) || true
           
-          # Create JSON file for gh api
-          printf '{"body": "## 🤖 Code Review\n\n%s"}' "$OUTPUT" > /tmp/comment.json
+          # Build JSON properly with jq - raw slurp then wrap in object
+          {
+            echo "## 🤖 Code Review"
+            echo ""
+            echo "$OUTPUT"
+          } | jq -Rs '{body: .}' > /tmp/comment.json
           
-          # Post comment to PR using gh cli
+          # Post comment
           gh api "repos/$REPO/issues/$PR_NUMBER/comments" --input /tmp/comment.json
