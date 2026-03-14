@@ -188,7 +188,7 @@ jobs:
           # Save review for posting
           echo "$REVIEW" > /tmp/review.txt
 
-      # P2: Post line-level comments (parse simple format)
+      # P2: Post line-level comments (parse simple format, dedupe)
       - name: Post line-level comments
         if: always()
         env:
@@ -200,41 +200,41 @@ jobs:
           # Get PR head SHA
           HEAD_SHA=$(gh pr view $PR_NUMBER --repo $REPO --json headRefOid --jq '.headRefOid')
           
-          # Parse review for file:line patterns
-          # Format 1: File: `path/to/file.ts:42` (preferred)
-          # Format 2: **File:** path/to/file.ts:42 (fallback)
-          # Also handles ranges like :7-9 (uses first line)
+          # Track already-commented lines to avoid duplicates
+          touch /tmp/commented_lines.txt
           
-          extract_and_post() {
-            local pattern="$1"
-            grep -oP "$pattern" /tmp/review.txt 2>/dev/null | head -10 | while read -r match; do
-              # Extract file and line
-              FILE=$(echo "$match" | rev | cut -d: -f2- | rev)
-              LINE=$(echo "$match" | rev | cut -d: -f1 | rev | cut -d- -f1)
-              
-              # Validate line is a number
-              if [[ "$LINE" =~ ^[0-9]+$ ]]; then
-                # Get surrounding context from review for this file
-                CONTEXT=$(grep -A 3 "File:.*$match" /tmp/review.txt | tail -3 | head -2 || true)
-                
-                if [ -n "$CONTEXT" ]; then
-                  echo "Posting comment on $FILE:$LINE"
-                  gh api "repos/$REPO/pulls/$PR_NUMBER/comments" \
-                    -F body="🤖 $CONTEXT" \
-                    -F path="$FILE" \
-                    -F line=$LINE \
-                    -F side="RIGHT" \
-                    -F commit_id="$HEAD_SHA" || true
-                fi
+          # Extract all file:line matches and post unique ones
+          grep -oP '(File: `|\\*\\*File:\\*\\*\\s*)\K[^`\s]+' /tmp/review.txt 2>/dev/null | while read -r match; do
+            # Extract file and line
+            FILE=$(echo "$match" | rev | cut -d: -f2- | rev)
+            LINE=$(echo "$match" | rev | cut -d: -f1 | rev | cut -d- -f1)
+            
+            # Validate line is a number
+            if [[ "$LINE" =~ ^[0-9]+$ ]]; then
+              # Check if already commented
+              KEY="$FILE:$LINE"
+              if grep -qxF "$KEY" /tmp/commented_lines.txt; then
+                echo "Skipping duplicate: $KEY"
+                continue
               fi
-            done
-          }
-          
-          # Try format 1: File: `path:line`
-          extract_and_post 'File: `\K[^`]+'
-          
-          # Try format 2: **File:** path:line  
-          extract_and_post '\*\*File:\*\*\s*\K[^\s]+'
+              
+              # Mark as commented
+              echo "$KEY" >> /tmp/commented_lines.txt
+              
+              # Get surrounding context from review for this file
+              CONTEXT=$(grep -A 3 "File:.*$match" /tmp/review.txt | tail -3 | head -2 || true)
+              
+              if [ -n "$CONTEXT" ]; then
+                echo "Posting comment on $FILE:$LINE"
+                gh api "repos/$REPO/pulls/$PR_NUMBER/comments" \
+                  -F body="🤖 $CONTEXT" \
+                  -F path="$FILE" \
+                  -F line=$LINE \
+                  -F side="RIGHT" \
+                  -F commit_id="$HEAD_SHA" || echo "Failed to post comment (line may be outside diff)"
+              fi
+            fi
+          done
 
       # Post main review comment
       - name: Post review comment
