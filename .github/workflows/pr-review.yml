@@ -116,37 +116,38 @@ jobs:
             PROJECT_CONTEXT="No project context available"
           fi
           
-          # Build enhanced system prompt
-          SYSTEM_PROMPT='You are a senior code reviewer with expertise in software engineering best practices.
+          # P0: Enhanced system prompt (stored in file to avoid YAML issues)
+          cat > /tmp/system_prompt.txt << 'PROMPTEOF'
+          You are a senior code reviewer with expertise in software engineering best practices.
           
-Review the PR diff for the following issues:
-
-1. **🔴 CRITICAL** - Bugs, security vulnerabilities, data loss risks
-2. **🟡 MEDIUM** - Logic errors, performance issues, missing edge cases  
-3. **🟢 LOW** - Code quality, maintainability, suggestions
-
-**Guidelines:**
-- Be concise and actionable
-- Skip style nits (formatting, naming preferences)
-- Provide code suggestions where helpful
-- Consider the project context when reviewing
-- If no issues found, acknowledge what looks good
-
-**Format your response as:**
-```markdown
-## Summary
-[Brief overall assessment]
-
-## Findings
-
-### [Severity] [Category]
-**File:** `path/to/file.ts:line`
-**Issue:** [Description]
-**Suggestion:** [Code fix if applicable]
-```
-
-Only report actionable issues. Do not mention things that look fine.'
-
+          Review the PR diff for the following issues:
+          
+          1. CRITICAL - Bugs, security vulnerabilities, data loss risks
+          2. MEDIUM - Logic errors, performance issues, missing edge cases  
+          3. LOW - Code quality, maintainability, suggestions
+          
+          Guidelines:
+          - Be concise and actionable
+          - Skip style nits (formatting, naming preferences)
+          - Provide code suggestions where helpful
+          - Consider the project context when reviewing
+          - If no issues found, acknowledge what looks good
+          
+          Format your response as:
+          ## Summary
+          [Brief overall assessment]
+          
+          ## Findings
+          ### [Severity] [Category]
+          File: path/to/file.ts:line
+          Issue: [Description]
+          Suggestion: [Code fix if applicable]
+          
+          Only report actionable issues. Do not mention things that look fine.
+          PROMPTEOF
+          
+          SYSTEM_PROMPT=$(cat /tmp/system_prompt.txt)
+          
           # Build JSON request with jq
           jq -n \
             --arg model "$MODEL" \
@@ -197,15 +198,15 @@ Only report actionable issues. Do not mention things that look fine.'
           HEAD_SHA=$(gh pr view $PR_NUMBER --repo $REPO --json headRefOid --jq '.headRefOid')
           
           # Parse review for file:line patterns and post comments
-          # Format: **File:** `path/to/file.ts:42`
-          grep -oP '\*\*File:\*\* `\K[^`]+' /tmp/review.txt 2>/dev/null | head -10 | while read -r match; do
+          # Format: File: path/to/file.ts:42
+          grep -oP 'File: `\K[^`]+' /tmp/review.txt 2>/dev/null | head -10 | while read -r match; do
             FILE=$(echo "$match" | cut -d: -f1)
             LINE=$(echo "$match" | cut -d: -f2)
             
             # Validate line is a number
             if [[ "$LINE" =~ ^[0-9]+$ ]]; then
               # Get surrounding context from review for this file
-              CONTEXT=$(grep -A 3 "**File:** \`$match\`" /tmp/review.txt | tail -3 | head -2 || true)
+              CONTEXT=$(grep -A 3 "File: \`$match\`" /tmp/review.txt | tail -3 | head -2 || true)
               
               if [ -n "$CONTEXT" ]; then
                 echo "Posting comment on $FILE:$LINE"
@@ -263,4 +264,4 @@ Only report actionable issues. Do not mention things that look fine.'
       - name: Cleanup
         if: always()
         run: |
-          rm -f /tmp/review_request.json /tmp/pr_diff.txt /tmp/pr_diff_raw.txt /tmp/review.txt /tmp/comment.json /tmp/context.txt 2>/dev/null || true
+          rm -f /tmp/review_request.json /tmp/pr_diff.txt /tmp/pr_diff_raw.txt /tmp/review.txt /tmp/comment.json /tmp/context.txt /tmp/system_prompt.txt 2>/dev/null || true
