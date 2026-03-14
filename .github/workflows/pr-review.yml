@@ -60,5 +60,5 @@ jobs:
           REVIEW=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // "Error: " + (.error.message // "Unknown error")')
           
           # Post comment
-          echo "$REVIEW" | jq -Rs '{body: "## 🤖 Code Review\n\n" + .}' > /tmp/comment.json
+          echo "$REVIEW" | jq -Rs '{body: ("## 🤖 Code Review\n\n" + .)}' > /tmp/comment.json
           gh api "repos/$REPO/issues/$PR_NUMBER/comments" --input /tmp/comment.json
