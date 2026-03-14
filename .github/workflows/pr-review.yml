@@ -1,0 +1,65 @@
+name: PR Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker
+        run: docker info
+
+      - name: Run OpenCode PR Review
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Get the base and head commit SHAs
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          
+          # Get the diff
+          DIFF=$(git diff $BASE_SHA...$HEAD_SHA --stat)
+          
+          # Run OpenCode with code-review command
+          # Using Docker to avoid local installation
+          docker run -i --rm \
+            -e OPENCODE_API_KEY \
+            -v $(pwd):/workspace \
+            ghcr.io/anomalyco/opencode:latest \
+            --message "Review these changes for the pull request. Focus on correctness, security, and maintainability." \
+          > review_output.md
+          
+          # Check if we have findings
+          if [ -s review_output.md ]; then
+            # Post comment to PR
+            COMMENT_BODY=$(cat review_output.md)
+            curl -X POST \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"body\": \"## 🤖 Code Review\n\n$COMMENT_BODY\"}" \
+              "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments"
+          else
+            echo "No review output generated"
+          fi
+
+      - name: Upload review output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-output
+          path: review_output.md
+          retention-days: 7
