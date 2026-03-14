@@ -3,6 +3,7 @@ import HelloWorld from './components/HelloWorld.vue'
 import Counter from './components/Counter.vue'
 import UserProfile from './components/UserProfile.vue'
 import TodoList from './components/TodoList.vue'
+import ItemList from './components/ItemList.vue'
 </script>
 
 <template>
@@ -12,6 +13,7 @@ import TodoList from './components/TodoList.vue'
     <Counter />
     <UserProfile />
     <TodoList />
+    <ItemList />
   </div>
 </template>
 
