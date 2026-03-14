@@ -91,7 +91,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          MODEL="${{ secrets.OPENCODE_MODEL || 'openrouter/anthropic/claude-3.5-sonnet' }}"
+          # Ensure model has openrouter/ prefix
+          RAW_MODEL="${{ secrets.OPENCODE_MODEL || 'anthropic/claude-3.5-sonnet' }}"
+          if [[ "$RAW_MODEL" != openrouter/* ]]; then
+            MODEL="openrouter/${RAW_MODEL}"
+          else
+            MODEL="$RAW_MODEL"
+          fi
+          
+          echo "Using model: $MODEL"
           
           # Extract custom prompt from comment (optional)
           PROMPT=$(echo '${{ github.event.comment.body }}' | sed 's/^\/review\s*//' | sed 's/^\/oc\s*//')
