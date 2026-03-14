@@ -17,12 +17,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Docker
-        run: docker info
-
       - name: Run OpenCode PR Review
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          OPENCODE_MODEL: ${{ secrets.OPENCODE_MODEL || 'anthropic/claude-3.5-sonnet' }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
@@ -31,16 +29,23 @@ jobs:
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
           
-          # Get the diff
-          DIFF=$(git diff $BASE_SHA...$HEAD_SHA --stat)
+          # Create a temporary file with the diff
+          git diff $BASE_SHA...$HEAD_SHA > /tmp/changes.diff
           
-          # Run OpenCode with code-review command
-          # Using Docker to avoid local installation
+          # Create OpenCode init file with model config
+          cat > /tmp/opencode.yaml << 'EOF'
+          model: ${{ env.OPENCODE_MODEL }}
+          provider: openrouter
+          EOF
+          
+          # Run OpenCode with code-review command using Docker
           docker run -i --rm \
             -e OPENCODE_API_KEY \
             -v $(pwd):/workspace \
+            -v /tmp/changes.diff:/tmp/changes.diff \
+            -v /tmp/opencode.yaml:/root/.config/opencode/settings.yaml \
             ghcr.io/anomalyco/opencode:latest \
-            --message "Review these changes for the pull request. Focus on correctness, security, and maintainability." \
+            --message "Review the changes in /tmp/changes.diff for this pull request. Focus on correctness, security, and maintainability." \
           > review_output.md
           
           # Check if we have findings
