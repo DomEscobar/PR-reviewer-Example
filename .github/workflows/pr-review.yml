@@ -5,279 +5,108 @@ on:
     types: [created]
 
 jobs:
-  opencode:
-    # P1: Only trigger on PRs with exact command match
+  review:
+    # Only run on PR comments starting with /review or /oc
     if: |
-      github.event.issue.pull_request != null && (
-        github.event.comment.body == '/oc' ||
-        github.event.comment.body == '/opencode' ||
-        startsWith(github.event.comment.body, '/oc ') ||
-        startsWith(github.event.comment.body, '/opencode ')
+      github.event.issue.pull_request &&
+      (
+        startsWith(github.event.comment.body, '/review') ||
+        startsWith(github.event.comment.body, '/oc')
       )
     runs-on: ubuntu-latest
-    timeout-minutes: 5
     permissions:
       contents: read
       pull-requests: write
+      issues: write
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # P2: Add reaction to show it's processing
-      - name: Add processing reaction
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh api "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
-            -F content="eyes" || true
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
-      # P1: Check author permission
-      - name: Check author permission
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install Tools
         run: |
-          COMMENTER="${{ github.event.comment.user.login }}"
-          PERM=$(gh api "repos/${{ github.repository }}/collaborators/$COMMENTER/permission" --jq '.permission' 2>/dev/null || echo "none")
+          npm install -g opencode
+          npm install -g commander chalk ora
           
-          if [[ "$PERM" == "none" ]]; then
-            echo '{"body": "## 🤖 Code Review\n\n⚠️ You are not authorized to trigger reviews. Only collaborators can use this command."}' > /tmp/comment.json
-            gh api "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments" --input /tmp/comment.json
-            exit 1
-          fi
-          echo "Authorized user with permission: $PERM"
+          # Copy CLI to runner and install
+          cp -r ${{ github.workspace }}/.github/pr-reviewer /tmp/pr-reviewer
+          cd /tmp/pr-reviewer && npm install && npm link
 
-      - name: Get PR diff and context
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          PR_NUMBER=${{ github.event.issue.number }}
-          REPO=${{ github.repository }}
-          
-          # Get PR diff
-          gh pr diff $PR_NUMBER --repo $REPO > /tmp/pr_diff_raw.txt
-          
-          # P1: Filter out generated/lock files
-          grep -v -E '^(\+\+\+|---|diff).*(/package-lock\.json|/yarn\.lock|/pnpm-lock\.yaml|\.min\.js|\.min\.css|/dist/|/build/|/node_modules/|\.d\.ts$|\.snap$)' \
-            /tmp/pr_diff_raw.txt > /tmp/pr_diff.txt || cp /tmp/pr_diff_raw.txt /tmp/pr_diff.txt
-          
-          # P0: Check diff size (max 50KB to prevent token overflow)
-          DIFF_SIZE=$(wc -c < /tmp/pr_diff.txt)
-          if [ $DIFF_SIZE -gt 51200 ]; then
-            echo '{"body": "## 🤖 Code Review\n\n⚠️ **Diff too large** ('$DIFF_SIZE' bytes > 50KB limit).\n\nPlease break down the PR into smaller chunks for automated review."}' > /tmp/comment.json
-            gh api "repos/$REPO/issues/$PR_NUMBER/comments" --input /tmp/comment.json
-            
-            # P2: Add reaction to show failure
-            gh api "repos/$REPO/issues/comments/${{ github.event.comment.id }}/reactions" -F content="-1" || true
-            exit 0
-          fi
-          
-          echo "Diff size: $DIFF_SIZE bytes"
-
-      # P2: Include project context if available
-      - name: Get project context
-        id: context
-        run: |
-          CONTEXT=""
-          
-          # Check for AGENTS.md (project guidelines)
-          if [ -f "AGENTS.md" ]; then
-            CONTEXT+="\n\n## Project Guidelines (AGENTS.md)\n$(head -100 AGENTS.md)"
-          fi
-          
-          # Check for README.md (project overview)
-          if [ -f "README.md" ]; then
-            CONTEXT+="\n\n## Project Overview (README.md)\n$(head -50 README.md)"
-          fi
-          
-          # Save context (truncate if too long)
-          echo "$CONTEXT" | head -200 > /tmp/context.txt
-          
-          # Save for later
-          echo "has_context=$([ -s /tmp/context.txt ] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
-
-      - name: Run AI Review
+      - name: Configure OpenCode
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MODEL: ${{ secrets.OPENCODE_MODEL || 'anthropic/claude-3.5-sonnet' }}
         run: |
-          PR_NUMBER=${{ github.event.issue.number }}
-          REPO=${{ github.repository }}
+          mkdir -p ~/.config/opencode
+          cat > ~/.config/opencode/settings.yaml << 'EOF'
+          model: ${{ secrets.OPENCODE_MODEL || 'openrouter/anthropic/claude-3.5-sonnet' }}
+          provider: openrouter
+          providers:
+            openrouter:
+              apiKey: ${OPENROUTER_API_KEY}
+              baseURL: https://openrouter.ai/api/v1
+          EOF
+
+      - name: Add Processing Reaction
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions \
+            -F content="eyes" || true
+
+      - name: Check Author Permission
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          AUTHOR="${{ github.event.comment.user.login }}"
+          PERM=$(gh api repos/${{ github.repository }}/collaborators/$AUTHOR/permission \
+            --jq '.permission')
           
-          # Extract prompt from comment (remove /oc or /opencode)
-          PROMPT=$(echo '${{ github.event.comment.body }}' | sed 's/^\/oc\s*//' | sed 's/^\/opencode\s*//')
-          [ -z "$PROMPT" ] && PROMPT="Review this PR"
-          
-          # Get project context
-          if [ "${{ steps.context.outputs.has_context }}" == "true" ]; then
-            PROJECT_CONTEXT=$(cat /tmp/context.txt)
-          else
-            PROJECT_CONTEXT="No project context available"
+          if [[ "$PERM" != "admin" && "$PERM" != "write" && "$PERM" != "maintain" ]]; then
+            echo "::warning::User $AUTHOR lacks write permission ($PERM)"
+            gh api repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions \
+              -F content="-1" || true
+            exit 1
           fi
-          
-          # P0: Enhanced system prompt (stored in file to avoid YAML issues)
-          cat > /tmp/system_prompt.txt << 'PROMPTEOF'
-          You are a senior code reviewer with expertise in software engineering best practices.
-          
-          Review the PR diff for the following issues:
-          
-          1. CRITICAL - Bugs, security vulnerabilities, data loss risks
-          2. MEDIUM - Logic errors, performance issues, missing edge cases  
-          3. LOW - Code quality, maintainability, suggestions
-          
-          Guidelines:
-          - Be concise and actionable
-          - Skip style nits (formatting, naming preferences)
-          - Provide code suggestions where helpful
-          - Consider the project context when reviewing
-          - If no issues found, acknowledge what looks good
-          
-          Format your response as:
-          ## Summary
-          [Brief overall assessment]
-          
-          ## Findings
-          ### [Severity] [Category]
-          File: `path/to/file.ts:42`
-          Issue: [Description]
-          Suggestion: [Code fix if applicable]
-          
-          IMPORTANT: Always use exact format "File: `path:line`" with backticks for line-level comments.
-          Use a single line number (not ranges like 7-9).
-          
-          Only report actionable issues. Do not mention things that look fine.
-          PROMPTEOF
-          
-          SYSTEM_PROMPT=$(cat /tmp/system_prompt.txt)
-          
-          # Build JSON request with jq
-          jq -n \
-            --arg model "$MODEL" \
-            --arg diff "$(cat /tmp/pr_diff.txt)" \
-            --arg prompt "$PROMPT" \
-            --arg system "$SYSTEM_PROMPT" \
-            --arg context "$PROJECT_CONTEXT" \
-            '{
-              model: $model,
-              messages: [
-                {role: "system", content: $system},
-                {role: "user", content: "## User Request\n\($prompt)\n\n## Project Context\n\($context)\n\n## PR Diff\n```diff\n\($diff)\n```\n\nPlease review this PR and provide feedback."}
-              ]
-            }' > /tmp/review_request.json
-          
-          # Call OpenRouter API with retry
-          for i in 1 2 3; do
-            RESPONSE=$(curl -s --max-time 120 https://openrouter.ai/api/v1/chat/completions \
-              -H "Authorization: Bearer $OPENROUTER_API_KEY" \
-              -H "Content-Type: application/json" \
-              -H "HTTP-Referer: https://github.com/$REPO" \
-              -d @/tmp/review_request.json)
-            
-            if echo "$RESPONSE" | jq -e '.choices[0].message.content' > /dev/null 2>&1; then
-              break
-            fi
-            
-            echo "Retry $i/3..."
-            sleep 5
-          done
-          
-          # Extract review content
-          REVIEW=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // "⚠️ Error: " + (.error.message // "Unknown API error")')
-          
-          # Save review for posting
-          echo "$REVIEW" > /tmp/review.txt
 
-      # P2: Post line-level comments (parse simple format, dedupe)
-      - name: Post line-level comments
-        if: always()
+      - name: Run Code Review
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          PR_NUMBER=${{ github.event.issue.number }}
-          REPO=${{ github.repository }}
+          # Extract custom prompt from comment (optional)
+          PROMPT=$(echo '${{ github.event.comment.body }}' | sed 's/^\/review\s*//' | sed 's/^\/oc\s*//')
           
-          # Get PR head SHA
-          HEAD_SHA=$(gh pr view $PR_NUMBER --repo $REPO --json headRefOid --jq '.headRefOid')
-          
-          # Track already-commented lines to avoid duplicates
-          touch /tmp/commented_lines.txt
-          
-          # Extract all file:line matches and post unique ones
-          grep -oP '(File: `|\\*\\*File:\\*\\*\\s*)\K[^`\s]+' /tmp/review.txt 2>/dev/null | while read -r match; do
-            # Extract file and line
-            FILE=$(echo "$match" | rev | cut -d: -f2- | rev)
-            LINE=$(echo "$match" | rev | cut -d: -f1 | rev | cut -d- -f1)
-            
-            # Validate line is a number
-            if [[ "$LINE" =~ ^[0-9]+$ ]]; then
-              # Check if already commented
-              KEY="$FILE:$LINE"
-              if grep -qxF "$KEY" /tmp/commented_lines.txt; then
-                echo "Skipping duplicate: $KEY"
-                continue
-              fi
-              
-              # Mark as commented
-              echo "$KEY" >> /tmp/commented_lines.txt
-              
-              # Get surrounding context from review for this file
-              CONTEXT=$(grep -A 3 "File:.*$match" /tmp/review.txt | tail -3 | head -2 || true)
-              
-              if [ -n "$CONTEXT" ]; then
-                echo "Posting comment on $FILE:$LINE"
-                gh api "repos/$REPO/pulls/$PR_NUMBER/comments" \
-                  -F body="🤖 $CONTEXT" \
-                  -F path="$FILE" \
-                  -F line=$LINE \
-                  -F side="RIGHT" \
-                  -F commit_id="$HEAD_SHA" || echo "Failed to post comment (line may be outside diff)"
-              fi
-            fi
-          done
+          if [ -n "$PROMPT" ] && [ "$PROMPT" != "review this" ]; then
+            pr-reviewer review \
+              --platform github \
+              --pr ${{ github.event.issue.number }} \
+              --repo ${{ github.repository }} \
+              --prompt "$PROMPT"
+          else
+            pr-reviewer review \
+              --platform github \
+              --pr ${{ github.event.issue.number }} \
+              --repo ${{ github.repository }}
+          fi
 
-      # Post main review comment
-      - name: Post review comment
-        if: always()
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          PR_NUMBER=${{ github.event.issue.number }}
-          REPO=${{ github.repository }}
-          
-          # Build and post main comment
-          {
-            echo "## 🤖 Code Review"
-            echo ""
-            echo "<!-- Triggered by @${{ github.event.comment.user.login }} -->"
-            echo ""
-            cat /tmp/review.txt
-            echo ""
-            echo "---"
-            echo "_Model: \`${{ secrets.OPENCODE_MODEL || 'anthropic/claude-3.5-sonnet' }}\` • Powered by [OpenRouter](https://openrouter.ai)_"
-          } | jq -Rs '{body: .}' > /tmp/comment.json
-          
-          gh api "repos/$REPO/issues/$PR_NUMBER/comments" --input /tmp/comment.json
-
-      # P2: Add final reaction
-      - name: Add success reaction
+      - name: Add Success Reaction
         if: success()
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh api "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
+          gh api repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions \
             -F content="rocket" || true
 
-      - name: Add failure reaction
+      - name: Add Failure Reaction
         if: failure()
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh api "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
+          gh api repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions \
             -F content="confused" || true
-
-      # Cleanup sensitive files
-      - name: Cleanup
-        if: always()
-        run: |
-          rm -f /tmp/review_request.json /tmp/pr_diff.txt /tmp/pr_diff_raw.txt /tmp/review.txt /tmp/comment.json /tmp/context.txt /tmp/system_prompt.txt 2>/dev/null || true
