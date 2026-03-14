@@ -98,17 +98,15 @@ End with summary count. If no issues, say so.
 
     try {
       // Build opencode command
-      // OpenCode expects: opencode run --agent X -f file -- "message"
+      // OpenCode expects: opencode run -m model -f file "message"
+      const model = this.model || 'openrouter/anthropic/claude-3.5-sonnet';
+      
       const args = [
         'run',
-        '--agent', 'code-review',
+        '-m', model,
         '--format', 'default',
         '-f', diffFile,
       ];
-
-      if (this.model) {
-        args.push('-m', this.model);
-      }
 
       // Add separator and message
       args.push('--', message);
