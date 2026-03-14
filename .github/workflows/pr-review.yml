@@ -42,25 +42,16 @@ jobs:
           cd /tmp/pr-reviewer && npm install && npm run build && npm link
 
       - name: Configure OpenCode
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
         run: |
           mkdir -p ~/.config/opencode
           cat > ~/.config/opencode/opencode.json << 'EOF'
           {
             "$schema": "https://opencode.ai/config.json",
-            "model": "${{ secrets.OPENCODE_MODEL || 'openrouter/anthropic/claude-3.5-sonnet' }}",
             "permission": {
               "external_directory": "allow",
               "*": "allow"
-            }
-          }
-          EOF
-          
-          # Store OpenRouter API key in opencode credentials
-          mkdir -p ~/.config/opencode
-          cat > ~/.config/opencode/credentials.json << 'EOF'
-          {
-            "openrouter": {
-              "apiKey": "${{ secrets.OPENCODE_API_KEY }}"
             }
           }
           EOF
@@ -91,12 +82,16 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Ensure model has openrouter/ prefix
+          # Ensure model has correct format: openrouter/openrouter/model-name
           RAW_MODEL="${{ secrets.OPENCODE_MODEL || 'anthropic/claude-3.5-sonnet' }}"
-          if [[ "$RAW_MODEL" != openrouter/* ]]; then
+          
+          # Handle different formats
+          if [[ "$RAW_MODEL" == openrouter/openrouter/* ]]; then
+            MODEL="$RAW_MODEL"
+          elif [[ "$RAW_MODEL" == openrouter/* ]]; then
             MODEL="openrouter/${RAW_MODEL}"
           else
-            MODEL="$RAW_MODEL"
+            MODEL="openrouter/openrouter/${RAW_MODEL}"
           fi
           
           echo "Using model: $MODEL"
