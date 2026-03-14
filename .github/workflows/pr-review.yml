@@ -139,9 +139,12 @@ jobs:
           
           ## Findings
           ### [Severity] [Category]
-          File: path/to/file.ts:line
+          File: `path/to/file.ts:42`
           Issue: [Description]
           Suggestion: [Code fix if applicable]
+          
+          IMPORTANT: Always use exact format "File: `path:line`" with backticks for line-level comments.
+          Use a single line number (not ranges like 7-9).
           
           Only report actionable issues. Do not mention things that look fine.
           PROMPTEOF
@@ -197,28 +200,41 @@ jobs:
           # Get PR head SHA
           HEAD_SHA=$(gh pr view $PR_NUMBER --repo $REPO --json headRefOid --jq '.headRefOid')
           
-          # Parse review for file:line patterns and post comments
-          # Format: File: path/to/file.ts:42
-          grep -oP 'File: `\K[^`]+' /tmp/review.txt 2>/dev/null | head -10 | while read -r match; do
-            FILE=$(echo "$match" | cut -d: -f1)
-            LINE=$(echo "$match" | cut -d: -f2)
-            
-            # Validate line is a number
-            if [[ "$LINE" =~ ^[0-9]+$ ]]; then
-              # Get surrounding context from review for this file
-              CONTEXT=$(grep -A 3 "File: \`$match\`" /tmp/review.txt | tail -3 | head -2 || true)
+          # Parse review for file:line patterns
+          # Format 1: File: `path/to/file.ts:42` (preferred)
+          # Format 2: **File:** path/to/file.ts:42 (fallback)
+          # Also handles ranges like :7-9 (uses first line)
+          
+          extract_and_post() {
+            local pattern="$1"
+            grep -oP "$pattern" /tmp/review.txt 2>/dev/null | head -10 | while read -r match; do
+              # Extract file and line
+              FILE=$(echo "$match" | rev | cut -d: -f2- | rev)
+              LINE=$(echo "$match" | rev | cut -d: -f1 | rev | cut -d- -f1)
               
-              if [ -n "$CONTEXT" ]; then
-                echo "Posting comment on $FILE:$LINE"
-                gh api "repos/$REPO/pulls/$PR_NUMBER/comments" \
-                  -F body="🤖 $CONTEXT" \
-                  -F path="$FILE" \
-                  -F line=$LINE \
-                  -F side="RIGHT" \
-                  -F commit_id="$HEAD_SHA" || true
+              # Validate line is a number
+              if [[ "$LINE" =~ ^[0-9]+$ ]]; then
+                # Get surrounding context from review for this file
+                CONTEXT=$(grep -A 3 "File:.*$match" /tmp/review.txt | tail -3 | head -2 || true)
+                
+                if [ -n "$CONTEXT" ]; then
+                  echo "Posting comment on $FILE:$LINE"
+                  gh api "repos/$REPO/pulls/$PR_NUMBER/comments" \
+                    -F body="🤖 $CONTEXT" \
+                    -F path="$FILE" \
+                    -F line=$LINE \
+                    -F side="RIGHT" \
+                    -F commit_id="$HEAD_SHA" || true
+                fi
               fi
-            fi
-          done || true
+            done
+          }
+          
+          # Try format 1: File: `path:line`
+          extract_and_post 'File: `\K[^`]+'
+          
+          # Try format 2: **File:** path:line  
+          extract_and_post '\*\*File:\*\*\s*\K[^\s]+'
 
       # Post main review comment
       - name: Post review comment
