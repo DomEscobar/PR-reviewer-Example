@@ -19,7 +19,7 @@ npm install -g @domesco/pr-reviewer
 
 ## Prerequisites
 
-1. **OpenCode** installed: `npm install -g opencode`
+1. **OpenCode** installed: `npm install -g opencode-ai`
 2. **API keys** configured (one of):
    - `OPENROUTER_API_KEY` for OpenRouter
    - `ANTHROPIC_API_KEY` for Claude

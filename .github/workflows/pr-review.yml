@@ -32,12 +32,12 @@ jobs:
 
       - name: Install Tools
         run: |
-          npm install -g opencode
-          npm install -g commander chalk ora
+          npm install -g opencode-ai
+          npm install -g commander chalk ora typescript
           
-          # Copy CLI to runner and install
+          # Copy CLI to runner, build, and install
           cp -r ${{ github.workspace }}/.github/pr-reviewer /tmp/pr-reviewer
-          cd /tmp/pr-reviewer && npm install && npm link
+          cd /tmp/pr-reviewer && npm install && npm run build && npm link
 
       - name: Configure OpenCode
         env:
