@@ -48,12 +48,12 @@ jobs:
           path: /tmp/pr-reviewer
           key: cli-${{ hashFiles('.github/pr-reviewer/**') }}
 
-      - name: Install Tools
+      - name: Install OpenCode
+        run: npm install -g opencode-ai
+
+      - name: Build CLI
         if: steps.cache-cli.outputs.cache-hit != 'true'
         run: |
-          npm install -g opencode-ai
-          npm install -g commander chalk ora typescript zod
-          
           # Copy CLI to runner, build, and install
           cp -r ${{ github.workspace }}/.github/pr-reviewer /tmp/pr-reviewer
           cd /tmp/pr-reviewer && npm install && npm run build
