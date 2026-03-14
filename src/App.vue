@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import HelloWorld from './components/HelloWorld.vue'
 import Counter from './components/Counter.vue'
+import UserProfile from './components/UserProfile.vue'
 </script>
 
 <template>
@@ -8,6 +9,7 @@ import Counter from './components/Counter.vue'
     <h1>PR Reviewer Example</h1>
     <HelloWorld />
     <Counter />
+    <UserProfile />
   </div>
 </template>
 
