@@ -7,7 +7,7 @@ import { OpenCodeRunner } from './opencode.js';
 import { rateLimiter } from './rate-limiter.js';
 import { sanitizePrompt, validateRepo, validateModel } from './validation.js';
 import logger from './logger.js';
-import type { ReviewOptions } from './types.js';
+import type { ReviewOptions, ReviewComment } from './types.js';
 
 const program = new Command();
 
@@ -131,7 +131,13 @@ program
           // Post line-level comments
           if (result.comments.length > 0) {
             postSpinner.text = `Posting ${result.comments.length} line comments...`;
-            await adapter.postLineComments(pr.number, result.comments, pr.headSha);
+            const commentsArray: ReviewComment[] = result.comments.map(c => ({
+              path: c.path,
+              line: c.line,
+              body: c.body,
+              severity: c.severity,
+            }));
+            await adapter.postLineComments(pr.number, commentsArray, pr.headSha);
           }
 
           postSpinner.succeed(`Posted review with ${result.comments.length} line comments`);
@@ -198,13 +204,13 @@ interface ParsedUrl {
 function parseReviewUrl(url: string): ParsedUrl | null {
   // GitHub: https://github.com/owner/repo/pull/123
   const githubMatch = url.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
-  if (githubMatch) {
+  if (githubMatch && githubMatch[1] && githubMatch[2]) {
     return { platform: 'github', repo: githubMatch[1], pr: parseInt(githubMatch[2], 10) };
   }
 
   // GitLab: https://gitlab.com/group/project/-/merge_requests/456
   const gitlabMatch = url.match(/gitlab\.com\/(.+)\/-\/merge_requests\/(\d+)/);
-  if (gitlabMatch) {
+  if (gitlabMatch && gitlabMatch[1] && gitlabMatch[2]) {
     return { platform: 'gitlab', repo: gitlabMatch[1], mr: parseInt(gitlabMatch[2], 10) };
   }
 
@@ -225,7 +231,7 @@ function formatReviewComment(result: any): string {
 _Model: \`${metadata.model}\` • Duration: ${metadata.durationMs}ms • Files: ${metadata.filesReviewed}`;
 }
 
-function printSeveritySummary(comments: any[]): void {
+function printSeveritySummary(comments: readonly ReviewComment[]): void {
   const counts = {
     critical: comments.filter(c => c.severity === 'critical').length,
     high: comments.filter(c => c.severity === 'high').length,

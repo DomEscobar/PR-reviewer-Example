@@ -1,16 +1,14 @@
 import { execSync } from 'child_process';
-import type { 
-  PlatformAdapter, 
-  ReviewOptions, 
-  PullRequest, 
+import type {
+  PlatformAdapter,
+  ReviewOptions,
+  PullRequest,
   ReviewComment,
   GitHubPRResponse,
   GitHubFileResponse,
-  GitHubCommentResponse,
-  AggregateReviewError,
-} from './types.js';
-import { validateRepo } from './validation.js';
-import logger from './logger.js';
+} from '../types.js';
+import { validateRepo } from '../validation.js';
+import logger from '../logger.js';
 
 const MAX_RETRIES = 3;
 const INITIAL_BACKOFF_MS = 1000;
@@ -45,7 +43,12 @@ export class GitHubAdapter implements PlatformAdapter {
     }
 
     validateRepo(repo);
-    const [owner, name] = repo.split('/');
+    const parts = repo.split('/');
+    const owner = parts[0];
+    const name = parts[1];
+    if (!owner || !name) {
+      throw new Error(`Invalid repo format: ${repo}`);
+    }
 
     logger.info('Fetching PR', { repo, prNumber });
 
@@ -57,14 +60,14 @@ export class GitHubAdapter implements PlatformAdapter {
 
     // Fetch diff with size check
     const diff = await this.fetchDiff(owner, name, prNumber);
-    
+
     if (diff.length > MAX_DIFF_SIZE) {
       logger.warn('Diff exceeds size limit, truncating', {
         size: diff.length,
         limit: MAX_DIFF_SIZE,
       });
       // Truncate with note
-      const truncatedDiff = diff.slice(0, MAX_DIFF_SIZE) + 
+      const truncatedDiff = diff.slice(0, MAX_DIFF_SIZE) +
         '\n\n... [TRUNCATED - Diff too large for full review]';
       return this.buildPullRequest(prData, truncatedDiff, []);
     }
@@ -88,8 +91,13 @@ export class GitHubAdapter implements PlatformAdapter {
     if (!repo) throw new Error('Repository required (pass --repo owner/name)');
 
     validateRepo(repo);
-    const [owner, name] = repo.split('/');
-    
+    const parts = repo.split('/');
+    const owner = parts[0];
+    const name = parts[1];
+    if (!owner || !name) {
+      throw new Error(`Invalid repo format: ${repo}`);
+    }
+
     logger.info('Posting main comment', { repo, pr });
 
     await this.fetchWithRetry(
@@ -101,33 +109,38 @@ export class GitHubAdapter implements PlatformAdapter {
 
   async postLineComments(
     pr: number,
-    comments: readonly ReviewComment[],
+    comments: ReviewComment[],
     headSha: string
   ): Promise<void> {
     const repo = this.repo;
     if (!repo) throw new Error('Repository required (pass --repo owner/name)');
 
     validateRepo(repo);
-    const [owner, name] = repo.split('/');
+    const parts = repo.split('/');
+    const owner = parts[0];
+    const name = parts[1];
+    if (!owner || !name) {
+      throw new Error(`Invalid repo format: ${repo}`);
+    }
     
     logger.info('Posting line comments', { count: comments.length });
 
     // Post comments in parallel with Promise.allSettled
     const results = await Promise.allSettled(
-      comments.map(comment => 
+      comments.map(comment =>
         this.postSingleLineComment(owner, name, pr, comment, headSha)
       )
     );
 
     // Collect failures
     const failures = results.filter(r => r.status === 'rejected');
-    
+
     if (failures.length > 0) {
-      logger.warn('Some line comments failed', { 
-        failed: failures.length, 
-        total: comments.length 
+      logger.warn('Some line comments failed', {
+        failed: failures.length,
+        total: comments.length
       });
-      
+
       // Don't throw - partial success is acceptable for line comments
       // Main comment already posted with all findings
     }
@@ -154,12 +167,12 @@ export class GitHubAdapter implements PlatformAdapter {
   }
 
   private async fetchDiff(
-    owner: string, 
-    name: string, 
+    owner: string,
+    name: string,
     prNumber: number
   ): Promise<string> {
     const url = `https://api.github.com/repos/${owner}/${name}/pulls/${prNumber}`;
-    
+
     const response = await fetch(url, {
       headers: {
         'Authorization': `Bearer ${this.token}`,
@@ -208,9 +221,9 @@ export class GitHubAdapter implements PlatformAdapter {
       }
 
       const backoffMs = INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
-      logger.warn(`Retry ${attempt}/${MAX_RETRIES} after ${backoffMs}ms`, { 
-        endpoint, 
-        error: (error as Error).message 
+      logger.warn(`Retry ${attempt}/${MAX_RETRIES} after ${backoffMs}ms`, {
+        endpoint,
+        error: (error as Error).message
       });
 
       await this.sleep(backoffMs);
@@ -268,8 +281,8 @@ export class GitHubAdapter implements PlatformAdapter {
         path: f.filename,
         additions: f.additions,
         deletions: f.deletions,
-        status: f.status === 'copied' || f.status === 'changed' || f.status === 'unchanged' 
-          ? 'modified' 
+        status: f.status === 'copied' || f.status === 'changed' || f.status === 'unchanged'
+          ? 'modified'
           : f.status,
       })),
     };
@@ -280,7 +293,10 @@ export class GitHubAdapter implements PlatformAdapter {
     try {
       const remote = execSync('git remote get-url origin', { encoding: 'utf-8' }).trim();
       const match = remote.match(/github\.com[/:]([^/]+\/[^/.]+)/);
-      return match ? match[1] : undefined;
+      if (match && match.length > 1 && match[1]) {
+        return match[1];
+      }
+      return undefined;
     } catch {
       return undefined;
     }
@@ -288,7 +304,11 @@ export class GitHubAdapter implements PlatformAdapter {
 
   private extractPRFromEnv(): number | undefined {
     if (process.env.GITHUB_REF?.startsWith('refs/pull/')) {
-      return parseInt(process.env.GITHUB_REF.split('/')[2], 10);
+      const parts = process.env.GITHUB_REF.split('/');
+      const prStr = parts[2];
+      if (prStr) {
+        return parseInt(prStr, 10);
+      }
     }
     return undefined;
   }

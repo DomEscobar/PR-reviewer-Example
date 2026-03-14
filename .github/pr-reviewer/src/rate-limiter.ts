@@ -56,7 +56,10 @@ export class RateLimiter {
   }
 
   async recordReview(): Promise<void> {
-    this.state.reviews = [...this.state.reviews, Date.now()];
+    this.state = {
+      ...this.state,
+      reviews: [...this.state.reviews, Date.now()],
+    };
     await this.saveState();
     
     logger.info('Review recorded for rate limiting', {

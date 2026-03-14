@@ -44,7 +44,8 @@ export function sanitizePrompt(input: string | undefined): string {
 export function validateModel(model: string): string {
   const result = ModelSchema.safeParse(model);
   if (!result.success) {
-    throw new Error(`Invalid model: ${result.error.errors[0].message}`);
+    const firstError = result.error.errors[0];
+    throw new Error(`Invalid model: ${firstError?.message ?? 'Unknown error'}`);
   }
   return model;
 }
@@ -52,7 +53,8 @@ export function validateModel(model: string): string {
 export function validateRepo(repo: string): string {
   const result = RepoSchema.safeParse(repo);
   if (!result.success) {
-    throw new Error(`Invalid repo format: ${result.error.errors[0].message}`);
+    const firstError = result.error.errors[0];
+    throw new Error(`Invalid repo format: ${firstError?.message ?? 'Unknown error'}`);
   }
   return repo;
 }

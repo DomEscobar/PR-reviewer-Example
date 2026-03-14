@@ -240,8 +240,9 @@ ${pr.body || 'No description provided.'}`;
     let match;
 
     while ((match = fileLinePattern.exec(review)) !== null) {
-      const path = match[1];
-      const line = parseInt(match[3], 10);
+      const path = match[1] ?? '';
+      const lineStr = match[3] ?? '0';
+      const line = parseInt(lineStr, 10);
 
       // Get surrounding context
       const contextStart = match.index;
@@ -276,10 +277,10 @@ ${pr.body || 'No description provided.'}`;
 
   private extractSummary(review: string): string {
     const summaryMatch = review.match(/## Summary\n([\s\S]*?)(?=\n##|$)/i);
-    if (summaryMatch) return summaryMatch[1].trim();
+    if (summaryMatch && summaryMatch[1]) return summaryMatch[1].trim();
 
     const countMatch = review.match(/(\d+)\s+(critical|high|medium|low|issues?)/i);
-    if (countMatch) return `Found ${countMatch[0]}`;
+    if (countMatch && countMatch[0]) return `Found ${countMatch[0]}`;
 
     return 'Review completed.';
   }

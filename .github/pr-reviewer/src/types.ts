@@ -78,7 +78,7 @@ export interface PlatformAdapter {
   detect(): boolean;
   getPullRequest(options: ReviewOptions): Promise<PullRequest>;
   postComment(pr: number, comment: string): Promise<void>;
-  postLineComments(pr: number, comments: readonly ReviewComment[], headSha: string): Promise<void>;
+  postLineComments(pr: number, comments: ReviewComment[], headSha: string): Promise<void>;
 }
 
 // ============================================
