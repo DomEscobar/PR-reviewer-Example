@@ -18,6 +18,8 @@ jobs:
       contents: read
       pull-requests: write
       issues: write
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
 
     steps:
       - name: Checkout
@@ -40,13 +42,7 @@ jobs:
           cd /tmp/pr-reviewer && npm install && npm run build && npm link
 
       - name: Configure OpenCode
-        env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
         run: |
-          # Configure OpenRouter provider
-          echo "${OPENROUTER_API_KEY}" | opencode auth login openrouter
-          
-          # Set default model
           mkdir -p ~/.config/opencode
           cat > ~/.config/opencode/opencode.json << 'EOF'
           {
@@ -55,6 +51,16 @@ jobs:
             "permission": {
               "external_directory": "allow",
               "*": "allow"
+            }
+          }
+          EOF
+          
+          # Store OpenRouter API key in opencode credentials
+          mkdir -p ~/.config/opencode
+          cat > ~/.config/opencode/credentials.json << 'EOF'
+          {
+            "openrouter": {
+              "apiKey": "${{ secrets.OPENCODE_API_KEY }}"
             }
           }
           EOF
