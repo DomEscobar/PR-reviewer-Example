@@ -12,7 +12,7 @@ jobs:
       contains(github.event.comment.body, ' /opencode') ||
       startsWith(github.event.comment.body, '/opencode')
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     permissions:
       contents: read
       pull-requests: write
@@ -21,57 +21,44 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install OpenCode
-        run: npm install -g opencode-ai@latest
-
-      - name: Configure OpenCode for OpenRouter
-        run: |
-          mkdir -p ~/.config/opencode
-          cat > ~/.config/opencode/opencode.json << 'JSONEOF'
-          {
-            "provider": {
-              "openrouter": {
-                "npm": "@ai-sdk/openai-compatible",
-                "name": "OpenRouter",
-                "options": {
-                  "baseURL": "https://openrouter.ai/api/v1",
-                  "apiKey": "{env:OPENROUTER_API_KEY}",
-                  "headers": {
-                    "HTTP-Referer": "https://github.com/DomEscobar/PR-reviewer-Example",
-                    "X-Title": "PR Reviewer"
-                  }
-                }
-              }
-            },
-            "model": "openrouter/${{ secrets.OPENCODE_MODEL || 'anthropic/claude-3.5-sonnet' }}"
-          }
-          JSONEOF
-
-      - name: Run OpenCode Review
+      - name: Get PR diff and review
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MODEL: ${{ secrets.OPENCODE_MODEL || 'anthropic/claude-3.5-sonnet' }}
         run: |
           PR_NUMBER=${{ github.event.issue.number }}
           REPO=${{ github.repository }}
           
-          # Extract prompt
+          # Extract prompt from comment
           PROMPT=$(echo '${{ github.event.comment.body }}' | sed 's/^\/oc\s*//' | sed 's/^\/opencode\s*//')
           
-          # Run opencode
-          OUTPUT=$(opencode run "$PROMPT" 2>&1) || true
+          # Get PR diff
+          gh pr diff $PR_NUMBER --repo $REPO > /tmp/pr_diff.txt
           
-          # Build JSON properly with jq
-          {
-            echo "## 🤖 Code Review"
-            echo ""
-            echo "$OUTPUT"
-          } | jq -Rs '{body: .}' > /tmp/comment.json
+          # Build JSON request with jq
+          jq -n \
+            --arg model "$MODEL" \
+            --arg diff "$(cat /tmp/pr_diff.txt)" \
+            --arg prompt "$PROMPT" \
+            '{
+              model: $model,
+              messages: [
+                {role: "system", content: "You are a code reviewer. Provide actionable, concise feedback on PR diffs."},
+                {role: "user", content: "Review this PR diff and provide feedback. Focus on bugs, security, and code quality.\n\nUser request: \($prompt)\n\nDiff:\n```diff\n\($diff)\n```"}
+              ]
+            }' > /tmp/review_request.json
+          
+          # Call OpenRouter API
+          RESPONSE=$(curl -s https://openrouter.ai/api/v1/chat/completions \
+            -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+            -H "Content-Type: application/json" \
+            -H "HTTP-Referer: https://github.com/$REPO" \
+            -d @/tmp/review_request.json)
+          
+          # Extract review content
+          REVIEW=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // "Error: " + (.error.message // "Unknown error")')
           
           # Post comment
+          echo "$REVIEW" | jq -Rs '{body: "## 🤖 Code Review\n\n" + .}' > /tmp/comment.json
           gh api "repos/$REPO/issues/$PR_NUMBER/comments" --input /tmp/comment.json
