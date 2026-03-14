@@ -29,17 +29,32 @@ jobs:
       - name: Install OpenCode
         run: npm install -g opencode-ai@latest
 
-      - name: Configure OpenCode
+      - name: Configure OpenCode for OpenRouter
         run: |
           mkdir -p ~/.config/opencode
-          cat > ~/.config/opencode/settings.yaml << EOF
-          model: ${{ secrets.OPENCODE_MODEL || 'anthropic/claude-3.5-sonnet' }}
-          provider: openrouter
-          EOF
+          cat > ~/.config/opencode/opencode.json << 'JSONEOF'
+          {
+            "provider": {
+              "openrouter": {
+                "npm": "@ai-sdk/openai-compatible",
+                "name": "OpenRouter",
+                "options": {
+                  "baseURL": "https://openrouter.ai/api/v1",
+                  "apiKey": "{env:OPENROUTER_API_KEY}",
+                  "headers": {
+                    "HTTP-Referer": "https://github.com/DomEscobar/PR-reviewer-Example",
+                    "X-Title": "PR Reviewer"
+                  }
+                }
+              }
+            },
+            "model": "openrouter/${{ secrets.OPENCODE_MODEL || 'anthropic/claude-3.5-sonnet' }}"
+          }
+          JSONEOF
 
       - name: Run OpenCode Review
         env:
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           PR_NUMBER=${{ github.event.issue.number }}
@@ -51,7 +66,7 @@ jobs:
           # Run opencode
           OUTPUT=$(opencode run "$PROMPT" 2>&1) || true
           
-          # Build JSON properly with jq - raw slurp then wrap in object
+          # Build JSON properly with jq
           {
             echo "## 🤖 Code Review"
             echo ""
