@@ -13,10 +13,10 @@ jobs:
       startsWith(github.event.comment.body, '/opencode')
     runs-on: ubuntu-latest
     permissions:
-      id-token: write
       contents: read
       pull-requests: write
-      issues: read
+      issues: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -25,5 +25,6 @@ jobs:
       - uses: sst/opencode/github@latest
         with:
           model: ${{ secrets.OPENCODE_MODEL || 'openrouter/anthropic/claude-3.5-sonnet' }}
+          use-github-token: 'true'
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
